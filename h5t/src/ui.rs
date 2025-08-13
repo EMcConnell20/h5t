@@ -4,7 +4,7 @@ use crate::widgets::Tracker as TrackerWidget;
 use crate::widgets::{max_combatants_visible, CombatantBlock, StatBlock};
 use crate::state::{AfterKey, ActionState, ApplyCondition, ApplyDamage};
 
-use h5t_core::{CombatantKind, Tracker};
+use h5t_core::{Combatant, CombatantKind, Tracker};
 
 use ratatui::prelude::*;
 use crossterm::event::{read, Event, KeyCode};
@@ -13,7 +13,7 @@ use bimap::BiMap;
 use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 
-// -- Label Working -- //
+// -- Label Selection -- //
 
 /// Labels used for label mode. The tracker will choose labels from this string in sequential
 /// order.
@@ -38,7 +38,8 @@ impl LabelSelection {
 		self.selection[index]
 	}
 	
-	pub fn select(&mut self, index: usize) {
+	pub fn select(&mut self, label: char, label_count: usize) {
+		let Some(index) = Self::label_to_index(label, label_count) else { return };
 		debug_assert!(index < 32);
 		self.selection[index] = !self.selection[index];
 	}
@@ -138,6 +139,8 @@ impl LabelSelection {
 	}
 }
 
+// -- Old Label Select -- //
+
 /// State passed to [`TrackerWidget`] to handle label mode.
 #[derive(Clone, Debug, Default)]
 pub struct LabelModeState {
@@ -158,21 +161,79 @@ impl LabelModeState {
 
 /// The type of info being displayed in the UI info block.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum InfoBlock {
-    /// Combatant's primary stats (mostly useful for monsters).
-	Stats,
+pub enum InfoBlockMode {
     /// Combatant's combat state.
 	CombatState,
+    /// Combatant's primary stats (mostly useful for monsters).
+	Stats,
 }
 
-impl InfoBlock {
+impl InfoBlockMode {
     /// Cycle info block mode.
     pub fn toggle(&mut self) {
         *self = match self {
-            InfoBlock::Stats => InfoBlock::CombatState,
-            InfoBlock::CombatState => InfoBlock::Stats,
+            InfoBlockMode::Stats => InfoBlockMode::CombatState,
+            InfoBlockMode::CombatState => InfoBlockMode::Stats,
         };
     }
+}
+
+// -- Page Struct -- //
+
+#[derive(Clone, Debug)]
+pub struct Page {
+	id: usize, // Page number
+	combatants: Vec<usize>, // Vec of combatant indexes in the tracker.
+	label_selection: Option<Box<LabelSelection>>, // Option<Box<_>> to save space.
+}
+
+impl Page {
+	pub fn get_id(&self) -> usize { self.id }
+	
+	pub fn get_combatants(&self) -> &Vec<usize> { &self.combatants }
+	
+	pub fn get_selection(&self) -> Option<&Box<LabelSelection>>{
+		self.label_selection.as_ref()
+	}
+	
+	fn from_combatants(combatants: &Vec<Combatant>, page_size: usize) -> Vec<Self> {
+		let mut pages = Vec::new();
+		let mut count = combatants.len();
+		
+		'printer : loop {
+			let offset = pages.len() * page_size;
+			let space = count.min(page_size);
+			
+			let mut page = Self {
+				id: pages.len(),
+				combatants: Vec::with_capacity(space),
+				label_selection: None,
+			};
+			
+			(offset..(offset + space)).for_each(|i| page.combatants.push(i));
+			
+			pages.push(page);
+			if count > page_size { count -= page_size }
+			else { break 'printer }
+		}
+		
+		pages
+	}
+	
+	fn toggle_selection(&mut self, label: char) {
+		if let Some(ref mut select) = self.label_selection {
+			select.select(label, self.combatants.len());
+		} else {
+			let mut select = Box::new(LabelSelection::new());
+			select.select(label, self.combatants.len());
+			self.label_selection = Some(select);
+		}
+	}
+	
+	/// Takes the page's label selection
+	fn take_selection(&mut self) -> Option<Box<LabelSelection>> {
+		self.label_selection.take()
+	}
 }
 
 // -- UI Struct -- //
@@ -185,8 +246,14 @@ pub struct UI<B: Backend> {
     /// The initiative tracker.
     pub tracker: Tracker,
 
+	/// Combatant pages
+	pages: Vec<Page>,
+	current_page: usize,
+	
+	/// Whether label selection mode is enabled
+	labels_enabled: bool,
     /// Current info block display mode
-    info_block: InfoBlock,
+	info_block_mode: InfoBlockMode,
 	/// (optional) Current action being applied
 	action_state: Option<ActionState>,
 	/// (optional) Current label mode
@@ -195,10 +262,19 @@ pub struct UI<B: Backend> {
 
 impl<B: Backend> UI<B> {
     pub fn new(terminal: Terminal<B>, tracker: Tracker) -> Self {
+		let pages = Page::from_combatants(
+			&tracker.combatants,
+			max_combatants_visible(terminal.size().unwrap())
+		);
+		
         Self {
             terminal,
             tracker,
-            info_block: InfoBlock::CombatState,
+			pages,
+			current_page: 0,
+			labels_enabled: false,
+            info_block_mode: InfoBlockMode::CombatState,
+			
             action_state: None,
             label_state: None,
         }
@@ -208,10 +284,6 @@ impl<B: Backend> UI<B> {
 		'run_loop : loop {
             self.draw().unwrap();
 			
-			// NOTE This implementation prevents self.draw() from being called every frame the mouse
-			//		moves. read() picks up on mouse inputs, and this effectively ignores them.
-			//		This doesn't prevent the screen from being redrawn after invalid key inputs, but
-			//		that's less of an issue.
 			let key_input = 'get_key_input: loop {
 				if let Ok(Event::Key(key)) = read() {
 					break 'get_key_input key;
@@ -233,6 +305,7 @@ impl<B: Backend> UI<B> {
                 KeyCode::Char('c') => {
                     self.action_state = Some(ActionState::Condition(ApplyCondition::default()));
                 },
+				
                 KeyCode::Char('d') => {
                     let selected = self.enter_label_mode();
                     self.action_state = Some(ActionState::Damage(ApplyDamage::new(selected)));
@@ -243,7 +316,7 @@ impl<B: Backend> UI<B> {
                 KeyCode::Char('b') => { self.use_bonus_action(); }
                 KeyCode::Char('r') => { self.use_reaction(); }
 				
-                KeyCode::Char('s') => self.info_block.toggle(),
+                KeyCode::Char('s') => self.info_block_mode.toggle(),
                 KeyCode::Char('n') => self.next_turn(),
                 KeyCode::Char('q') => break 'run_loop,
 				
@@ -252,8 +325,6 @@ impl<B: Backend> UI<B> {
         }
     }
 
-	// TODO Move to Drawable trait
-    /// Draw the tracker to the terminal.
     pub fn draw(&'_ mut self) -> std::io::Result<ratatui::CompletedFrame<'_>> {
         self.terminal.draw(|frame| {
             let layout = Layout::horizontal([
@@ -261,7 +332,9 @@ impl<B: Backend> UI<B> {
                 Constraint::Percentage(50),
             ]).split(frame.area());
             let [tracker_area, info_area] = [layout[0], layout[1]];
-
+			
+			
+			
             // show tracker
             let tracker_widget = if let Some(label) = &self.label_state {
                 TrackerWidget::with_labels(&self.tracker, label.clone())
@@ -271,7 +344,7 @@ impl<B: Backend> UI<B> {
             frame.render_widget(tracker_widget, tracker_area);
 
             let combatant = self.tracker.current_combatant();
-            if self.info_block == InfoBlock::Stats {
+            if self.info_block_mode == InfoBlockMode::Stats {
                 // show stat block in place of the combatant card
                 let CombatantKind::Monster(monster) = &combatant.kind;
                 frame.render_widget(StatBlock::new(monster), info_area);
@@ -296,24 +369,32 @@ impl<B: Backend> UI<B> {
     /// This function blocks until the user selects the combatants and presses the `Enter` key,
     /// returning mutable references to the selected combatants.
     pub fn enter_label_mode(&mut self) -> Vec<usize> {
-        let size = self.terminal.size().unwrap();
-        let combatants = max_combatants_visible(size).min(self.combatants.len());
+		// If there aren't pages, no selections can be made.
+		if self.pages.len() == 0 { return Vec::new() }
+		
+		// TODO Remove this
+        // let size = self.terminal.size().unwrap();
+        // let combatants = max_combatants_visible(size).min(self.tracker.combatants.len());
 
+		self.labels_enabled = true;
+		
+		// TODO Remove this
         // generate labels for all combatants in view
-        let combatant_label_map = (0..combatants)
-            // .skip(self.turn) // TODO: change when pagination is implemented
-            .map(|i| (LABELS.chars().nth(i).unwrap(), i))
-            .collect::<BiMap<_, _>>();
+        // let combatant_label_map = (0..combatants)
+        //     // .skip(self.turn) // TODO: change when pagination is implemented
+        //     .map(|i| (LABELS.chars().nth(i).unwrap(), i))
+        //     .collect::<BiMap<_, _>>();
 
-        let mut selected_labels = HashSet::new();
+		// TODO Remove this
+        // let mut selected_labels = HashSet::new();
 		
         'select_loop: loop {
-			self.label_state = Some(
-				LabelModeState::new(combatant_label_map.clone(), selected_labels.clone())
-			);
+			// TODO Remove this
+			// self.label_state = Some(
+			// 	LabelModeState::new(combatant_label_map.clone(), selected_labels.clone())
+			// );
 			
             self.draw().unwrap();
-
 			
 			let key_input = 'get_key_input: loop {
 				if let Ok(Event::Key(key)) = read() {
@@ -322,26 +403,57 @@ impl<B: Backend> UI<B> {
 			};
 			
 			match key_input.code {
-				KeyCode::Enter => break 'select_loop,
+				KeyCode::Enter => // Confirm Selections
+					break 'select_loop,
+				
+				KeyCode::Esc => // Cancel Selections
+					return Vec::new(),
+				
+				KeyCode::Up => // Previous Page
+					if self.current_page + 1 < self.pages.len() { self.current_page += 1 },
+				
+				KeyCode::Down => // Next Page
+					if self.current_page > 0 { self.current_page -= 1 },
 				
 				KeyCode::Char(label) => {
-					if combatant_label_map.contains_left(&label) {
-						if selected_labels.contains(&label) {
-							selected_labels.remove(&label);
-						} else {
-							selected_labels.insert(label);
-						}
-					}
+					self.pages[self.current_page].toggle_selection(label);
+					
+					// TODO Remove this
+					// if combatant_label_map.contains_left(&label) {
+					// 	if selected_labels.contains(&label) {
+					// 		selected_labels.remove(&label);
+					// 	} else {
+					// 		selected_labels.insert(label);
+					// 	}
+					// }
 				},
+				
 				_ => (),
 			}
         }
+		
+		self.labels_enabled = false;
+		
+		// Collect selections from pages.
+		let mut final_selection = Vec::new();
+		for page in &mut self.pages {
+			let Some(selections) = page.take_selection() else { continue };
+			
+			for i in 0..page.combatants.len() {
+				if selections.selection[i] {
+					final_selection.push(i + page.id)
+				}
+			}
+		}
 
+		// TODO Remove this
         // return selected combatants
-        selected_labels
-            .into_iter()
-            .filter_map(|label| combatant_label_map.get_by_left(&label).copied())
-            .collect()
+        // selected_labels
+        //     .into_iter()
+        //     .filter_map(|label| combatant_label_map.get_by_left(&label).copied())
+        //     .collect()
+		
+		final_selection
     }
 }
 

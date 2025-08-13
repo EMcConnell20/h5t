@@ -1,11 +1,13 @@
 // -- Imports -- //
 
-use crate::ui::LabelModeState;
+use std::thread::current;
+use crate::ui::{Page, LabelModeState, LabelSelection};
 
-use h5t_core::Action;
+use h5t_core::{Action, Combatant};
 use h5t_core::Tracker as CoreTracker;
 
 use ratatui::prelude::*;
+use ratatui::style::Styled;
 use ratatui::widgets::*;
 
 // -- Constants -- //
@@ -21,7 +23,60 @@ const BONUS_ACTION_COLOR: Color = Color::Rgb(255, 165, 0);
 pub(crate) fn max_combatants_visible(widget_size: Size) -> usize {
 	// 2 Lines for upper and lower borders
 	// 4 Lines for header, spacing, etc...
-	widget_size.height as usize - 6
+	// maximum of 32 combatants per page
+	(widget_size.height as usize - 6).min(32)
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct TrackerWidget<'a> {
+	tracker: &'a CoreTracker,
+	page: &'a Page,
+	draw_labels: bool,
+}
+
+impl<'a> TrackerWidget<'a> {
+	pub fn new(tracker: &'a CoreTracker, page: &'a Page, draw_labels: bool) -> Self {
+		Self { tracker, page, draw_labels }
+	}
+}
+
+impl<'a> Widget for TrackerWidget<'a> {
+	fn render(self, area: Rect, buf: &mut Buffer)
+	where
+		Self: Sized
+	{
+		Block::bordered()
+			.border_type(BorderType::Rounded)
+			.border_style(Style::default().fg(Color::White))
+			.title("Initiative Tracker")
+			.render(area, buf);
+		
+		let layout = Layout::vertical([
+			Constraint::Length(3), // round and turn
+			Constraint::Fill(1),
+		])
+			.horizontal_margin(2)
+			.vertical_margin(1) // avoid the border
+			.spacing(1)
+			.split(area);
+		
+		let [round_and_turn, combatants] = [layout[0], layout[1]];
+		
+		let text = vec![
+			Line::styled(format!("Page: {}", self.page.get_id() + 1), Modifier::BOLD),
+			Line::styled(format!("Round: {}", self.tracker.round + 1), Modifier::BOLD),
+			Line::styled(
+				format!("Turn: {}/{}", self.tracker.turn + 1, self.tracker.combatants.len()),
+				Modifier::BOLD
+			),
+		];
+		
+		Paragraph::new(text)
+			.wrap(Wrap { trim: true })
+			.render(round_and_turn, buf);
+		
+		Widget::render(make_combat_table(self), combatants, buf);
+	}
 }
 
 /// Widget that render's the initiative [`Tracker`](CoreTracker).
@@ -44,8 +99,6 @@ impl<'a> Tracker<'a> {
         Self { tracker, label_state: label }
     }
 }
-
-
 
 impl<'a> Widget for Tracker<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
@@ -107,6 +160,88 @@ fn action_line(actions: Action) -> Line<'static> {
 	spans.pop(); // remove the trailing divider
 	
 	Line::from(spans)
+}
+
+// 'b: 'a => b outlives a.
+fn make_combat_table<'a, 'b: 'a>(tracker_widget: TrackerWidget<'b>) -> Table<'a> {
+	use utility_functions::{combatant_row, mix_colors};
+	
+	let TrackerWidget { tracker, page, draw_labels } = tracker_widget;
+	let page_length = page.get_combatants().len();
+	
+	let combatants = page
+		.get_combatants()
+		.iter()
+		.map(|i| &tracker.combatants[*i])
+		.collect::<Vec<_>>();
+	
+	let selection = if draw_labels
+		&& let Some(select) = page.get_selection()
+	{
+		**select
+	} else {
+		LabelSelection::default()
+	};
+	
+	let iter = combatants
+		.into_iter()
+		.enumerate()
+		.map(
+			|(index, combatant)| {
+				let is_owner_of_turn = index == tracker.turn;
+				let is_label_selected = draw_labels && selection.label_is_active(index);
+				
+				let label = if draw_labels {
+					LabelSelection::index_to_label(page.get_combatants()[index], page_length)
+				} else { None };
+				
+				let row = combatant_row(label, combatant);
+				
+				let mut style = Style::default();
+				let mut bg_color = None;
+				
+				if is_label_selected { style = style.bold() }
+				
+				if combatant.hit_points <= 0 {
+					bg_color = bg_color
+						.map(|current| mix_colors((255, 0, 0), current))
+						.or(Some((100, 0, 0)))
+				}
+				if is_owner_of_turn {
+					bg_color = bg_color
+						.map(|current| mix_colors((0, 48, 130), current))
+						.or(Some((0, 48, 130)));
+				}
+				if is_label_selected {
+					bg_color = bg_color
+						.map(|current| mix_colors((128, 85, 0), current))
+						.or(Some((128, 85, 0)));
+				}
+				
+				let bg_color = bg_color.map(|bg| Color::Rgb(bg.0, bg.1, bg.2)).unwrap_or(Color::Reset);
+				style = style.bg(bg_color);
+				
+				row.style(style)
+			}
+		);
+	
+	Table::new(
+		iter,
+		[
+			Constraint::Length(2), // label
+			Constraint::Fill(2),   // name
+			Constraint::Fill(1),   // actions
+			Constraint::Fill(1),   // hp / max hp
+			Constraint::Fill(1),   // conditions
+		]
+	)
+		.header(Row::new([
+			Text::raw(""),
+			Text::from("Name").centered(),
+			Text::from("Actions").centered(),
+			Text::from("HP / Max HP").centered(),
+			Text::from("Conditions").centered(),
+		]).bold())
 }
 
 /// Creates a [`Table`] widget for displaying the combatants in the tracker.

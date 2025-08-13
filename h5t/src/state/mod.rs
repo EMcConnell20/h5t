@@ -35,7 +35,6 @@ pub enum ActionState {
 }
 
 impl ActionState {
-	// TODO Move to Drawable trait
     /// Allow the state to draw itself.
     pub fn draw(&self, frame: &mut ratatui::Frame) {
         match self {
@@ -44,7 +43,6 @@ impl ActionState {
         }
     }
 
-	// TODO Move to InputHandler trait
     /// Handle a key event.
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> AfterKey {
         match self {
