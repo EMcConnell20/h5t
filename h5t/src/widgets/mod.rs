@@ -13,4 +13,4 @@ pub use hit_points::HitPoints;
 pub use stat_block::StatBlock;
 pub use tracker::Tracker;
 
-pub(crate) use tracker::max_combatants;
+pub(crate) use tracker::max_combatants_visible;

@@ -1,7 +1,7 @@
 // -- Imports -- //
 
 use crate::widgets::Tracker as TrackerWidget;
-use crate::widgets::{max_combatants, CombatantBlock, StatBlock};
+use crate::widgets::{max_combatants_visible, CombatantBlock, StatBlock};
 use crate::state::{AfterKey, ActionState, ApplyCondition, ApplyDamage};
 
 use h5t_core::{CombatantKind, Tracker};
@@ -22,49 +22,120 @@ use std::ops::{Deref, DerefMut};
 /// This keeps labels physically close to each other on the keyboard.
 pub(crate) const LABELS: &str = "qazwsxedcrfvtgbyhnujmik,ol.p;/[']";
 
-/// Converts a label to an index if the label is on screen.
-///
-/// label - The label character. <br>
-/// label_count - The number of labels being displayed.
-const fn label_to_index(label: char, label_count: usize) -> Option<usize> {
-	let index = match label {
-		'q' => 0,
-		'a' => 1,
-		'z' => 2,
-		'w' => 3,
-		's' => 4,
-		'x' => 5,
-		'e' => 6,
-		'd' => 7,
-		'c' => 8,
-		'r' => 9,
-		'f' => 10,
-		'v' => 11,
-		't' => 12,
-		'g' => 13,
-		'b' => 14,
-		'y' => 15,
-		'h' => 16,
-		'n' => 17,
-		'u' => 18,
-		'j' => 19,
-		'm' => 20,
-		'i' => 21,
-		'k' => 22,
-		',' => 23,
-		'l' => 24,
-		'.' => 25,
-		'p' => 26,
-		';' => 27,
-		'/' => 28,
-		'[' => 29,
-		'\'' => 30,
-		']' => 31,
-		_ => return None,
-	};
+/// The label selection state of the tracker.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct LabelSelection {
+	/// None if not in selection mode. <br>
+	/// Some if labels are being selected.
+	selection: [bool; 32],
+}
+
+impl LabelSelection {
+	pub const fn new() -> Self { Self { selection: [false; 32] } }
 	
-	// This ensures that only the labels shown on screen are selectable.
-	if index < label_count { Some(index) } else { None }
+	pub const fn label_is_active(&self, index: usize) -> bool {
+		debug_assert!(index < 32);
+		self.selection[index]
+	}
+	
+	pub fn select(&mut self, index: usize) {
+		debug_assert!(index < 32);
+		self.selection[index] = !self.selection[index];
+	}
+	
+	pub fn wipe_selection(&mut self) {
+		self.selection = [false; 32]
+	}
+	
+	/// Converts a label to an index if the label is on screen.
+	///
+	/// label - The label character. <br>
+	/// label_count - The number of labels being displayed.
+	pub const fn label_to_index(label: char, label_count: usize) -> Option<usize> {
+		let index = match label {
+			'q' => 0,
+			'a' => 1,
+			'z' => 2,
+			'w' => 3,
+			's' => 4,
+			'x' => 5,
+			'e' => 6,
+			'd' => 7,
+			'c' => 8,
+			'r' => 9,
+			'f' => 10,
+			'v' => 11,
+			't' => 12,
+			'g' => 13,
+			'b' => 14,
+			'y' => 15,
+			'h' => 16,
+			'n' => 17,
+			'u' => 18,
+			'j' => 19,
+			'm' => 20,
+			'i' => 21,
+			'k' => 22,
+			',' => 23,
+			'l' => 24,
+			'.' => 25,
+			'p' => 26,
+			';' => 27,
+			'/' => 28,
+			'[' => 29,
+			'\'' => 30,
+			']' => 31,
+			_ => return None,
+		};
+		
+		// This ensures that only the labels shown on screen are selectable.
+		if index < label_count { Some(index) } else { None }
+	}
+	
+	/// Converts an index to a label if the label is on screen.
+	///
+	/// index - The label index. <br>
+	/// label_count - The number of labels being displayed.
+	pub const fn index_to_label(index: usize, label_count: usize) -> Option<char> {
+		let label = match index {
+			0 => 'q',
+			1 => 'a',
+			2 => 'z',
+			3 => 'w',
+			4 => 's',
+			5 => 'x',
+			6 => 'e',
+			7 => 'd',
+			8 => 'c',
+			9 => 'r',
+			10 => 'f',
+			11 => 'v',
+			12 => 't',
+			13 => 'g',
+			14 => 'b',
+			15 => 'y',
+			16 => 'h',
+			17 => 'n',
+			18 => 'u',
+			19 => 'j',
+			20 => 'm',
+			21 => 'i',
+			22 => 'k',
+			23 => ',',
+			24 => 'l',
+			25 => '.',
+			26 => 'p',
+			27 => ';',
+			28 => '/',
+			29 => '[',
+			30 => '\'',
+			31 => ']',
+			_ => return None,
+		};
+		
+		// This ensures that only the labels shown on screen are selectable.
+		if index < label_count { Some(label) } else { None }
+	}
 }
 
 /// State passed to [`TrackerWidget`] to handle label mode.
@@ -226,7 +297,7 @@ impl<B: Backend> UI<B> {
     /// returning mutable references to the selected combatants.
     pub fn enter_label_mode(&mut self) -> Vec<usize> {
         let size = self.terminal.size().unwrap();
-        let combatants = max_combatants(size).min(self.combatants.len());
+        let combatants = max_combatants_visible(size).min(self.combatants.len());
 
         // generate labels for all combatants in view
         let combatant_label_map = (0..combatants)
