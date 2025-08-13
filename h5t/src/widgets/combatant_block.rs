@@ -5,7 +5,7 @@ use crate::widgets::conditions::FullConditions;
 use super::{AbilityScores, HitPoints};
 
 /// Creates a [`Text`] widget for displaying the combatant's name and whether they are dead.
-fn basic_status_text(combatant: &Combatant) -> Text {
+fn basic_status_text(combatant: &'_ Combatant) -> Text<'_> {
     if combatant.hit_points <= 0 {
         Text::styled(format!("{} (Dead)", combatant.name()), Modifier::BOLD)
     } else {
@@ -14,7 +14,7 @@ fn basic_status_text(combatant: &Combatant) -> Text {
 }
 
 /// Creates a [`Table`] widget for displaying a monster's basic statistics.
-fn basic_stats_table(combatant: &Combatant) -> Table {
+fn basic_stats_table(combatant: &'_ Combatant) -> Table<'_> {
     /// Format's a speed value.
     fn fmt_speed(speed: &Speed) -> String {
         let mut parts = String::new();

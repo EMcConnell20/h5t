@@ -59,7 +59,7 @@ impl Widget for AbilityScores {
         );
 
         /// Helper to build a row for the ability scores table.
-        fn row(odd: bool, ability: &str, score: i32, save: Option<i32>) -> Row {
+        fn row(odd: bool, ability: &'_ str, score: i32, save: Option<i32>) -> Row<'_> {
             // more green for high scores, more red for low scores
             // 0: (255, 0, 0)
             // 10: (255, 255, 255)

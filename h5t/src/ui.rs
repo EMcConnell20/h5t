@@ -1,144 +1,189 @@
-use bimap::BiMap;
-use crate::{
-    state::{AfterKey, ApplyCondition, ApplyDamage, State},
-    widgets::{max_combatants, CombatantBlock, StatBlock, Tracker as TrackerWidget},
-};
-use crossterm::event::{read, Event, KeyCode};
+// -- Imports -- //
+
+use crate::widgets::Tracker as TrackerWidget;
+use crate::widgets::{max_combatants, CombatantBlock, StatBlock};
+use crate::state::{AfterKey, ActionState, ApplyCondition, ApplyDamage};
+
 use h5t_core::{CombatantKind, Tracker};
+
 use ratatui::prelude::*;
-use std::{collections::HashSet, ops::{Deref, DerefMut}};
+use crossterm::event::{read, Event, KeyCode};
+use bimap::BiMap;
+
+use std::collections::HashSet;
+use std::ops::{Deref, DerefMut};
+
+// -- Label Working -- //
 
 /// Labels used for label mode. The tracker will choose labels from this string in sequential
 /// order.
 ///
-/// The sequence of labels is simply the characters on a QUERTY keyboard, starting from the
-/// top-left and moving down, then right. This keeps labels physically close to each other on the
-/// keyboard.
-pub(crate) const LABELS: &'static str = "qazwsxedcrfvtgbyhnujmik,ol.p;/[']";
+/// The sequence of labels is simply the characters on a QWERTY keyboard going column by column.
+/// This keeps labels physically close to each other on the keyboard.
+pub(crate) const LABELS: &str = "qazwsxedcrfvtgbyhnujmik,ol.p;/[']";
 
-/// The info block to show in the UI.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum InfoBlock {
-    /// Show the combatant's full stat block, mostly useful for monsters.
-    StatBlock,
-
-    /// Show the combatant's current combat state.
-    CombatantCard,
-}
-
-impl InfoBlock {
-    /// Toggle the info block.
-    pub fn toggle(&mut self) {
-        *self = match self {
-            InfoBlock::StatBlock => InfoBlock::CombatantCard,
-            InfoBlock::CombatantCard => InfoBlock::StatBlock,
-        };
-    }
+/// Converts a label to an index if the label is on screen.
+///
+/// label - The label character. <br>
+/// label_count - The number of labels being displayed.
+const fn label_to_index(label: char, label_count: usize) -> Option<usize> {
+	let index = match label {
+		'q' => 0,
+		'a' => 1,
+		'z' => 2,
+		'w' => 3,
+		's' => 4,
+		'x' => 5,
+		'e' => 6,
+		'd' => 7,
+		'c' => 8,
+		'r' => 9,
+		'f' => 10,
+		'v' => 11,
+		't' => 12,
+		'g' => 13,
+		'b' => 14,
+		'y' => 15,
+		'h' => 16,
+		'n' => 17,
+		'u' => 18,
+		'j' => 19,
+		'm' => 20,
+		'i' => 21,
+		'k' => 22,
+		',' => 23,
+		'l' => 24,
+		'.' => 25,
+		'p' => 26,
+		';' => 27,
+		'/' => 28,
+		'[' => 29,
+		'\'' => 30,
+		']' => 31,
+		_ => return None,
+	};
+	
+	// This ensures that only the labels shown on screen are selectable.
+	if index < label_count { Some(index) } else { None }
 }
 
 /// State passed to [`TrackerWidget`] to handle label mode.
 #[derive(Clone, Debug, Default)]
 pub struct LabelModeState {
-    /// The labels to display next to each combatant.
-    pub labels: BiMap<char, usize>,
-
-    /// The labels that have been selected.
-    pub selected: HashSet<char>,
+	/// The labels to display next to each combatant.
+	pub labels: BiMap<char, usize>,
+	
+	/// The labels that have been selected.
+	pub selected: HashSet<char>,
 }
 
-/// A wrapper around a [`Tracker`] that handles UI-dependent logic, such as label mode.
-pub struct Ui<B: Backend> {
-    /// The terminal to draw to.
-    pub terminal: Terminal<B>,
-
-    /// The underlying tracker.
-    pub tracker: Tracker,
-
-    /// Which info block to show.
-    info_block: InfoBlock,
-
-    /// The currently active state.
-    state: Option<State>,
-
-    /// State for label mode.
-    label_state: Option<LabelModeState>,
+impl LabelModeState {
+	fn new(labels: BiMap<char, usize>, selected: HashSet<char>) -> Self {
+		Self { labels, selected }
+	}
 }
 
-impl<B: Backend> Drop for Ui<B> {
-    fn drop(&mut self) {
-        ratatui::restore();
+// -- Info Block -- //
+
+/// The type of info being displayed in the UI info block.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum InfoBlock {
+    /// Combatant's primary stats (mostly useful for monsters).
+	Stats,
+    /// Combatant's combat state.
+	CombatState,
+}
+
+impl InfoBlock {
+    /// Cycle info block mode.
+    pub fn toggle(&mut self) {
+        *self = match self {
+            InfoBlock::Stats => InfoBlock::CombatState,
+            InfoBlock::CombatState => InfoBlock::Stats,
+        };
     }
 }
 
-impl<B: Backend> Ui<B> {
-    /// Wrap a [`Tracker`] in a new [`UiTracker`].
+// -- UI Struct -- //
+
+/// A wrapper around a [`Tracker`] that handles UI-dependent logic such as label mode.
+#[derive(Debug)]
+pub struct UI<B: Backend> {
+    /// The display terminal.
+    pub terminal: Terminal<B>,
+    /// The initiative tracker.
+    pub tracker: Tracker,
+
+    /// Current info block display mode
+    info_block: InfoBlock,
+	/// (optional) Current action being applied
+	action_state: Option<ActionState>,
+	/// (optional) Current label mode
+    label_state: Option<LabelModeState>,
+}
+
+impl<B: Backend> UI<B> {
     pub fn new(terminal: Terminal<B>, tracker: Tracker) -> Self {
         Self {
             terminal,
             tracker,
-            info_block: InfoBlock::CombatantCard,
-            state: None,
+            info_block: InfoBlock::CombatState,
+            action_state: None,
             label_state: None,
         }
     }
 
-    /// Run off the tracker until the user exits.
     pub fn run(&mut self) {
-        loop {
+		'run_loop : loop {
             self.draw().unwrap();
+			
+			// NOTE This implementation prevents self.draw() from being called every frame the mouse
+			//		moves. read() picks up on mouse inputs, and this effectively ignores them.
+			//		This doesn't prevent the screen from being redrawn after invalid key inputs, but
+			//		that's less of an issue.
+			let key_input = 'get_key_input: loop {
+				if let Ok(Event::Key(key)) = read() {
+					break 'get_key_input key;
+				}
+			};
 
-            // wait for user input
-            let Ok(Event::Key(key)) = read() else {
-                continue;
-            };
-
-            // if a state is active, let it handle the input
-            if let Some(mut state) = self.state.take() {
-                match state.handle_key(key) {
-                    AfterKey::Exit => {
-                        // apply the state to the tracker
-                        state.apply(&mut self.tracker);
-                    },
-                    AfterKey::Stay => {
-                        // put the state back
-                        self.state = Some(state);
-                    },
+            // Handle any active tracker state.
+            if let Some(mut state) = self.action_state.take() {
+                match state.handle_key(key_input) {
+                    AfterKey::Exit => state.apply(&mut self.tracker),
+                    AfterKey::Stay => self.action_state = Some(state),
                 }
-                continue;
+				
+                continue 'run_loop;
             }
-
-            match key.code {
+			
+			// Handle regular input.
+            match key_input.code {
                 KeyCode::Char('c') => {
-                    self.state = Some(State::ApplyCondition(ApplyCondition::default()));
+                    self.action_state = Some(ActionState::Condition(ApplyCondition::default()));
                 },
                 KeyCode::Char('d') => {
                     let selected = self.enter_label_mode();
-                    self.state = Some(State::ApplyDamage(ApplyDamage::new(selected)));
+                    self.action_state = Some(ActionState::Damage(ApplyDamage::new(selected)));
                     self.label_state = None;
                 },
-                KeyCode::Char('a') => {
-                    self.use_action();
-                },
-                KeyCode::Char('b') => {
-                    self.use_bonus_action();
-                },
-                KeyCode::Char('r') => {
-                    self.use_reaction();
-                },
-                KeyCode::Char('s') => {
-                    self.info_block.toggle();
-                },
-                KeyCode::Char('n') => {
-                    self.next_turn();
-                },
-                KeyCode::Char('q') => break,
+				
+                KeyCode::Char('a') => { self.use_action(); }
+                KeyCode::Char('b') => { self.use_bonus_action(); }
+                KeyCode::Char('r') => { self.use_reaction(); }
+				
+                KeyCode::Char('s') => self.info_block.toggle(),
+                KeyCode::Char('n') => self.next_turn(),
+                KeyCode::Char('q') => break 'run_loop,
+				
                 _ => (),
             }
         }
     }
 
+	// TODO Move to Drawable trait
     /// Draw the tracker to the terminal.
-    pub fn draw(&mut self) -> std::io::Result<ratatui::CompletedFrame> {
+    pub fn draw(&'_ mut self) -> std::io::Result<ratatui::CompletedFrame<'_>> {
         self.terminal.draw(|frame| {
             let layout = Layout::horizontal([
                 Constraint::Percentage(50),
@@ -155,7 +200,7 @@ impl<B: Backend> Ui<B> {
             frame.render_widget(tracker_widget, tracker_area);
 
             let combatant = self.tracker.current_combatant();
-            if self.info_block == InfoBlock::StatBlock {
+            if self.info_block == InfoBlock::Stats {
                 // show stat block in place of the combatant card
                 let CombatantKind::Monster(monster) = &combatant.kind;
                 frame.render_widget(StatBlock::new(monster), info_area);
@@ -164,7 +209,7 @@ impl<B: Backend> Ui<B> {
                 frame.render_widget(CombatantBlock::new(combatant), info_area);
             }
 
-            let Some(state) = self.state.as_ref() else {
+            let Some(state) = self.action_state.as_ref() else {
                 return;
             };
             state.draw(frame);
@@ -181,66 +226,71 @@ impl<B: Backend> Ui<B> {
     /// returning mutable references to the selected combatants.
     pub fn enter_label_mode(&mut self) -> Vec<usize> {
         let size = self.terminal.size().unwrap();
-        let num_combatants_in_view = max_combatants(size).min(self.combatants.len());
+        let combatants = max_combatants(size).min(self.combatants.len());
 
         // generate labels for all combatants in view
-        let label_to_combatant_idx = (0..num_combatants_in_view)
+        let combatant_label_map = (0..combatants)
             // .skip(self.turn) // TODO: change when pagination is implemented
             .map(|i| (LABELS.chars().nth(i).unwrap(), i))
             .collect::<BiMap<_, _>>();
 
-        // watch for user-input and select combatants
         let mut selected_labels = HashSet::new();
-        loop {
-            // render tracker with labels
-            self.label_state = Some(LabelModeState {
-                labels: label_to_combatant_idx.clone(),
-                selected: selected_labels.clone(),
-            });
+		
+        'select_loop: loop {
+			self.label_state = Some(
+				LabelModeState::new(combatant_label_map.clone(), selected_labels.clone())
+			);
+			
             self.draw().unwrap();
 
-            // wait for user input
-            if let Ok(Event::Key(key)) = read() {
-                match key.code {
-                    KeyCode::Enter => break,
-                    KeyCode::Char(label) => {
-                        if label_to_combatant_idx.contains_left(&label) {
-                            if selected_labels.contains(&label) {
-                                selected_labels.remove(&label);
-                            } else {
-                                selected_labels.insert(label);
-                            }
-                        }
-                    },
-                    _ => (),
-                }
-            }
+			
+			let key_input = 'get_key_input: loop {
+				if let Ok(Event::Key(key)) = read() {
+					break 'get_key_input key;
+				}
+			};
+			
+			match key_input.code {
+				KeyCode::Enter => break 'select_loop,
+				
+				KeyCode::Char(label) => {
+					if combatant_label_map.contains_left(&label) {
+						if selected_labels.contains(&label) {
+							selected_labels.remove(&label);
+						} else {
+							selected_labels.insert(label);
+						}
+					}
+				},
+				_ => (),
+			}
         }
 
         // return selected combatants
         selected_labels
             .into_iter()
-            .filter_map(|label| label_to_combatant_idx.get_by_left(&label).copied())
+            .filter_map(|label| combatant_label_map.get_by_left(&label).copied())
             .collect()
     }
 }
 
-impl<B: Backend> Deref for Ui<B> {
+impl<B: Backend> Widget for UI<B> {
+	fn render(self, area: Rect, buf: &mut Buffer) {
+		TrackerWidget::new(&self.tracker).render(area, buf);
+	}
+}
+
+impl<B: Backend> Drop for UI<B> {
+	fn drop(&mut self) { ratatui::restore() }
+}
+
+// NOTE `tracker` is already a public field, so these implementations aren't necessary.
+impl<B: Backend> Deref for UI<B> {
     type Target = Tracker;
 
-    fn deref(&self) -> &Self::Target {
-        &self.tracker
-    }
+    fn deref(&self) -> &Self::Target { &self.tracker }
 }
 
-impl<B: Backend> DerefMut for Ui<B> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.tracker
-    }
-}
-
-impl<B: Backend> Widget for Ui<B> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        TrackerWidget::new(&self.tracker).render(area, buf);
-    }
+impl<B: Backend> DerefMut for UI<B> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.tracker }
 }

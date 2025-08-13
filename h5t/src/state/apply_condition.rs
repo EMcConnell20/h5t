@@ -64,6 +64,7 @@ pub struct ApplyCondition {
 }
 
 impl ApplyCondition {
+	// TODO Move to drawable trait
     /// Draw the state to the given [`Frame`].
     pub fn draw(&self, frame: &mut Frame) {
         let area = frame.area();

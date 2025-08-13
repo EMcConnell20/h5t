@@ -297,7 +297,7 @@ pub struct Monster {
     #[serde(default, deserialize_with = "deserialize_proficiencies")]
     pub proficiencies: Proficiencies,
 
-    /// The monster's chalenge rating. Can be `0.0`, `0.125`, `0.25`, `0.5`, or an integer from `1`
+    /// The monster's challenge rating. Can be `0.0`, `0.125`, `0.25`, `0.5`, or an integer from `1`
     /// to `30`.
     pub challenge_rating: f32,
 
