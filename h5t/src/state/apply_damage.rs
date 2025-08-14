@@ -59,7 +59,9 @@ impl ApplyDamage {
 
     /// Apply the damage to the tracker.
     pub fn apply(&self, tracker: &mut h5t_core::Tracker) {
-        let value = self.value.trim().parse::<i32>().unwrap();
+        let value = self.value.trim().parse::<i32>().unwrap_or(0);
+		if value == 0 { return }
+		
         for combatant_idx in &self.combatants {
             let combatant = &mut tracker.combatants[*combatant_idx];
             combatant.damage(value);
