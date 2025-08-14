@@ -173,15 +173,8 @@ impl ApplyCondition {
 
             if let Some(existing_condition) = existing_condition {
                 // override its length if the new one is longer
-                if let ConditionDuration::Forever = existing_condition.duration {
-                    continue;
-                }
-                if let ConditionDuration::Rounds(existing_duration) = existing_condition.duration {
-                    if let ConditionDuration::Rounds(new_duration) = duration {
-                        if new_duration > existing_duration {
-                            existing_condition.duration = duration;
-                        }
-                    }
+                if duration > existing_condition.duration {
+                    existing_condition.duration = duration;
                 }
             } else {
                 // add new condition

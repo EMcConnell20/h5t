@@ -1,5 +1,5 @@
 use enumset::EnumSetType;
-use std::num::NonZeroU32;
+use std::{cmp::Ordering, num::NonZeroU32};
 
 /// A condition and how long it lasts.
 #[derive(Clone, Debug)]
@@ -114,6 +114,30 @@ impl std::fmt::Display for ConditionDuration {
             ConditionDuration::Minutes(n) => write!(f, "{} minutes", n),
             ConditionDuration::Forever => write!(f, "Forever"),
         }
+    }
+}
+
+impl PartialOrd for ConditionDuration {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ConditionDuration {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let (Some(rounds_left_self), Some(rounds_left_other)) = (
+            self.rounds_left(),
+            other.rounds_left(),
+        ) else {
+            return match (self, other) {
+                (ConditionDuration::Forever, ConditionDuration::Forever) => Ordering::Equal,
+                (ConditionDuration::Forever, _) => Ordering::Greater,
+                (_, ConditionDuration::Forever) => Ordering::Less,
+                _ => unreachable!(),
+            };
+        };
+
+        rounds_left_self.cmp(&rounds_left_other)
     }
 }
 
