@@ -7,7 +7,7 @@ mod widgets;
 
 // -- Imports -- //
 
-use ui::UI;
+use ui::Ui;
 use h5t_core::{CombatantKind, Monster, Tracker};
 
 // -- Main -- //
@@ -18,7 +18,7 @@ fn main() {
     let monsters = serde_json::from_reader::<_, Vec<Monster>>(file).unwrap();
     // println!("{:#?}", monsters);
 
-    let mut tracker = UI::new(
+    let mut tracker = Ui::new(
         ratatui::init(),
         Tracker::new(monsters
             .into_iter()

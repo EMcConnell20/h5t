@@ -6,9 +6,7 @@ use crate::state::{AfterKey, ActionState, ApplyCondition, ApplyDamage};
 use h5t_core::{Combatant, CombatantKind, Tracker};
 
 use ratatui::prelude::*;
-use crossterm::event::{read, Event, KeyCode};
-
-use std::ops::{Deref, DerefMut};
+use crossterm::event::{read, Event, KeyCode, KeyEvent};
 
 // -- Label Selection -- //
 
@@ -132,24 +130,6 @@ impl LabelSelection {
 	}
 }
 
-// -- Old Label Select -- //
-
-// State passed to [`TrackerWidget`] to handle label mode.
-// #[derive(Clone, Debug, Default)]
-// pub struct LabelModeState {
-// 	/// The labels to display next to each combatant.
-// 	pub labels: BiMap<char, usize>,
-//
-// 	/// The labels that have been selected.
-// 	pub selected: HashSet<char>,
-// }
-//
-// impl LabelModeState {
-// 	fn new(labels: BiMap<char, usize>, selected: HashSet<char>) -> Self {
-// 		Self { labels, selected }
-// 	}
-// }
-
 // -- Info Block -- //
 
 /// The type of info being displayed in the UI info block.
@@ -195,6 +175,32 @@ impl Page {
 		self.label_selection.as_ref()
 	}
 	
+	fn toggle_selection(&mut self, label: char) {
+		if let Some(ref mut select) = self.label_selection {
+			select.select(label, self.combatants.len());
+		} else {
+			let mut select = Box::new(LabelSelection::new());
+			select.select(label, self.combatants.len());
+			self.label_selection = Some(select);
+		}
+	}
+	
+	fn toggle_index(&mut self, index: usize) {
+		if let Some(ref mut select) = self.label_selection {
+			debug_assert!(index < select.selection.len());
+			select.selection[index] = !select.selection[index];
+		} else {
+			let mut select = Box::new(LabelSelection::new());
+			select.selection[index] = true;
+			self.label_selection = Some(select);
+		}
+	}
+	
+	/// Takes the page's label selection
+	fn take_selection(&mut self) -> Option<Box<LabelSelection>> {
+		self.label_selection.take()
+	}
+	
 	fn from_combatants(combatants: &Vec<Combatant>, page_size: usize) -> Vec<Self> {
 		if page_size == 0 { return Vec::new() };
 		
@@ -221,19 +227,44 @@ impl Page {
 		pages
 	}
 	
-	fn toggle_selection(&mut self, label: char) {
-		if let Some(ref mut select) = self.label_selection {
-			select.select(label, self.combatants.len());
-		} else {
-			let mut select = Box::new(LabelSelection::new());
-			select.select(label, self.combatants.len());
-			self.label_selection = Some(select);
+	fn from_combatants_and_selection(
+		combatants: &Vec<Combatant>,
+		selections: Vec<usize>,
+		page_size: usize
+	) -> Vec<Self> {
+		if selections.len() == 0 { return Self::from_combatants(combatants, page_size) }
+		if page_size == 0 { return Vec::new() }
+		
+		let mut pages = Vec::new();
+		let mut count = combatants.len();
+		let mut selections = selections.into_iter().peekable();
+		
+		'printer : loop {
+			let offset = pages.len() * page_size;
+			let space = count.min(page_size);
+			
+			let mut page = Self {
+				id: pages.len(),
+				combatants: Vec::with_capacity(space),
+				label_selection: None,
+			};
+			
+			(offset..(offset + space)).for_each(|i| page.combatants.push(i));
+			
+			while let Some(index) = selections.peek() {
+				let idx = *index;
+				if idx < offset + page_size {
+					page.toggle_index(idx);
+					selections.next();
+				} else { break }
+			}
+			
+			pages.push(page);
+			
+			if count > page_size { count -= page_size } else { break 'printer }
 		}
-	}
-	
-	/// Takes the page's label selection
-	fn take_selection(&mut self) -> Option<Box<LabelSelection>> {
-		self.label_selection.take()
+		
+		pages
 	}
 }
 
@@ -256,15 +287,44 @@ impl PageConfig {
 	) {
 		let updated_page_size = max_combatants_visible(terminal.size().unwrap_or_default());
 		if self.page_size != updated_page_size {
-			*pages = Page::from_combatants(&tracker.combatants, updated_page_size);
+			let selections = self.take_page_selections(pages);
+			
+			self.page_size = updated_page_size;
+			
+			*pages = Page::from_combatants_and_selection(
+				&tracker.combatants,
+				selections,
+				updated_page_size,
+			);
 			
 			if self.current_page >= pages.len() {
 				if pages.len() == 0 { self.current_page = 0 }
 				else { self.current_page = pages.len() - 1 }
 			}
-			
-			self.page_size = updated_page_size;
 		}
+	}
+	
+	fn take_page_selections(&mut self, pages: &mut Vec<Page>) -> Vec<usize> {
+		let mut selections = Vec::new();
+		
+		let mut iter = 0;
+		
+		for page in pages {
+			if let Some(page_selection) = page.take_selection() {
+				for i in 0..self.page_size {
+					if page_selection.selection[i] {
+						selections.push(iter);
+					}
+					
+					iter += 1;
+				}
+			} else {
+				iter += self.page_size;
+			}
+		}
+		
+		
+		selections
 	}
 }
 
@@ -272,7 +332,7 @@ impl PageConfig {
 
 /// A wrapper around a [`Tracker`] that handles UI-dependent logic such as label mode.
 #[derive(Debug)]
-pub struct UI<B: Backend> {
+pub struct Ui<B: Backend> {
     /// The display terminal.
     pub terminal: Terminal<B>,
     /// The initiative tracker.
@@ -292,7 +352,7 @@ pub struct UI<B: Backend> {
     // label_state: Option<LabelModeState>,
 }
 
-impl<B: Backend> UI<B> {
+impl<B: Backend> Ui<B> {
     pub fn new(terminal: Terminal<B>, tracker: Tracker) -> Self {
 		let page_config = PageConfig::new(&terminal);
 		let pages = Page::from_combatants(&tracker.combatants, page_config.page_size);
@@ -313,19 +373,7 @@ impl<B: Backend> UI<B> {
 			
             self.draw().unwrap();
 			
-			let key_input = 'get_key_input: loop {
-				let Ok(event) = read() else { continue 'get_key_input };
-				match event {
-					Event::Key(key) => break 'get_key_input key,
-					
-					Event::Resize(_, _) => {
-						self.page_config.update(&mut self.pages, &self.terminal, &self.tracker);
-						self.draw().unwrap();
-					}
-					
-					_ => (),
-				}
-			};
+			let key_input = self.get_key_input();
 
             // Handle any active tracker state.
             if let Some(mut state) = self.action_mode.take() {
@@ -358,12 +406,12 @@ impl<B: Backend> UI<B> {
                     self.action_mode = Some(ActionState::Damage(ApplyDamage::new(selected)));
                 },
 				
-                KeyCode::Char('a') => { self.use_action(); }
-                KeyCode::Char('b') => { self.use_bonus_action(); }
-                KeyCode::Char('r') => { self.use_reaction(); }
+                KeyCode::Char('a') => { self.tracker.use_action(); }
+                KeyCode::Char('b') => { self.tracker.use_bonus_action(); }
+                KeyCode::Char('r') => { self.tracker.use_reaction(); }
 				
                 KeyCode::Char('s') => self.info_block_mode.toggle(),
-                KeyCode::Char('n') => self.next_turn(),
+                KeyCode::Char('n') => self.tracker.next_turn(),
                 KeyCode::Char('q') => break 'run_loop,
 				
                 _ => (),
@@ -387,15 +435,6 @@ impl<B: Backend> UI<B> {
 			
 			frame.render_widget(tracker_widget, tracker_area);
 			
-			// TODO Remove this
-            // show tracker
-            // let old_tracker_widget = if let Some(label) = &self.label_state {
-            //     OldTrackerWidget::with_labels(&self.tracker, label.clone())
-            // } else {
-            //     OldTrackerWidget::new(&self.tracker)
-            // };
-            // frame.render_widget(old_tracker_widget, tracker_area);
-
             let combatant = self.tracker.current_combatant();
 			
 			match self.info_block_mode {
@@ -408,15 +447,6 @@ impl<B: Backend> UI<B> {
 					frame.render_widget(StatBlock::new(monster), info_area);
 				}
 			}
-			
-            // if self.info_block_mode == InfoBlockMode::Stats {
-            //     // show stat block in place of the combatant card
-            //     let CombatantKind::Monster(monster) = &combatant.kind;
-            //     frame.render_widget(StatBlock::new(monster), info_area);
-            // } else {
-            //     // show combatant card
-            //     frame.render_widget(CombatantBlock::new(combatant), info_area);
-            // }
 			
             let Some(state) = self.action_mode.as_ref() else { return };
             state.draw(frame);
@@ -435,35 +465,12 @@ impl<B: Backend> UI<B> {
 		// If there aren't pages, no selections can be made.
 		if self.pages.len() == 0 { return Vec::new() }
 		
-		// TODO Remove this
-        // let size = self.terminal.size().unwrap();
-        // let combatants = max_combatants_visible(size).min(self.tracker.combatants.len());
-
 		self.labels_enabled = true;
 		
-		// TODO Remove this
-        // generate labels for all combatants in view
-        // let combatant_label_map = (0..combatants)
-        //     // .skip(self.turn) // TODO: change when pagination is implemented
-        //     .map(|i| (LABELS.chars().nth(i).unwrap(), i))
-        //     .collect::<BiMap<_, _>>();
-
-		// TODO Remove this
-        // let mut selected_labels = HashSet::new();
-		
         'select_loop: loop {
-			// TODO Remove this
-			// self.label_state = Some(
-			// 	LabelModeState::new(combatant_label_map.clone(), selected_labels.clone())
-			// );
-			
             self.draw().unwrap();
 			
-			let key_input = 'get_key_input: loop {
-				if let Ok(Event::Key(key)) = read() {
-					break 'get_key_input key;
-				}
-			};
+			let key_input = self.get_key_input();
 			
 			match key_input.code {
 				KeyCode::Enter => // Confirm Selections
@@ -482,18 +489,8 @@ impl<B: Backend> UI<B> {
 						self.page_config.current_page += 1
 					},
 				
-				KeyCode::Char(label) => {
-					self.pages[self.page_config.current_page].toggle_selection(label);
-					
-					// TODO Remove this
-					// if combatant_label_map.contains_left(&label) {
-					// 	if selected_labels.contains(&label) {
-					// 		selected_labels.remove(&label);
-					// 	} else {
-					// 		selected_labels.insert(label);
-					// 	}
-					// }
-				},
+				KeyCode::Char(label) =>
+					self.pages[self.page_config.current_page].toggle_selection(label),
 				
 				_ => (),
 			}
@@ -508,23 +505,32 @@ impl<B: Backend> UI<B> {
 			
 			for i in 0..page.combatants.len() {
 				if selections.selection[i] {
-					final_selection.push(i + page.id)
+					final_selection.push(i + page.id * self.page_config.page_size)
 				}
 			}
 		}
-
-		// TODO Remove this
-        // return selected combatants
-        // selected_labels
-        //     .into_iter()
-        //     .filter_map(|label| combatant_label_map.get_by_left(&label).copied())
-        //     .collect()
 		
 		final_selection
     }
+	
+	fn get_key_input(&mut self) -> KeyEvent {
+		'get_key_input: loop {
+			let Ok(event) = read() else { continue 'get_key_input };
+			match event {
+				Event::Key(key) => break 'get_key_input key,
+				
+				Event::Resize(_, _) => {
+					self.page_config.update(&mut self.pages, &self.terminal, &self.tracker);
+					self.draw().unwrap();
+				}
+				
+				_ => (),
+			}
+		}
+	}
 }
 
-impl<B: Backend> Widget for UI<B> {
+impl<B: Backend> Widget for Ui<B> {
 	fn render(self, area: Rect, buf: &mut Buffer) {
 		TrackerWidget::new(
 			&self.tracker,
@@ -534,17 +540,17 @@ impl<B: Backend> Widget for UI<B> {
 	}
 }
 
-impl<B: Backend> Drop for UI<B> {
+impl<B: Backend> Drop for Ui<B> {
 	fn drop(&mut self) { ratatui::restore() }
 }
 
 // NOTE `tracker` is already a public field, so these implementations aren't necessary.
-impl<B: Backend> Deref for UI<B> {
-    type Target = Tracker;
-
-    fn deref(&self) -> &Self::Target { &self.tracker }
-}
-
-impl<B: Backend> DerefMut for UI<B> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.tracker }
-}
+// impl<B: Backend> Deref for UI<B> {
+//     type Target = Tracker;
+//
+//     fn deref(&self) -> &Self::Target { &self.tracker }
+// }
+//
+// impl<B: Backend> DerefMut for UI<B> {
+//     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.tracker }
+// }

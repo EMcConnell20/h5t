@@ -138,7 +138,7 @@ fn make_combat_table<'a, 'b: 'a>(tracker_widget: TrackerWidget<'b>) -> Table<'a>
 				let is_label_selected = draw_labels && selection.label_is_active(index);
 				
 				let label = if draw_labels {
-					LabelSelection::index_to_label(page.get_combatants()[index], page_length)
+					LabelSelection::index_to_label(index, page_length)
 				} else { None };
 				
 				let row = combatant_row(label, combatant);

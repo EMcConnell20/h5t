@@ -1,11 +1,10 @@
 [package]
 name = "h5t"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 
 [dependencies]
 h5t-core = { path = "../h5t-core" }
-bimap = "0.6.3"
 crossterm = "0.29.0"
 itertools = "0.14.0"
 ratatui = "0.29.0"

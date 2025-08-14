@@ -1,9 +1,20 @@
-use crate::{selectable::Selectable, ui::LABELS, widgets::popup::{popup_area, Multiselect, Select}};
-use std::{collections::{HashMap, HashSet}, num::NonZeroU32};
-use crossterm::event::{KeyCode, KeyEvent};
+// -- Imports -- //
+
+use crate::state::AfterKey;
+use crate::selectable::Selectable;
+use crate::ui::{LABELS, LabelSelection, Page};
+use crate::widgets::popup::{popup_area, Multiselect, Select};
+
 use h5t_core::{Condition, ConditionDuration, ConditionKind};
-use ratatui::{layout::Flex, prelude::*};
-use super::AfterKey;
+
+use ratatui::prelude::*;
+use ratatui::layout::Flex;
+use crossterm::event::{KeyCode, KeyEvent};
+
+use std::num::NonZeroU32;
+use std::collections::{HashMap, HashSet};
+
+// -- Field Info -- //
 
 /// Helper enum to indicate which form field is currently selected.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -17,7 +28,8 @@ enum Field {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 enum Unit {
     #[default]
-    UntilNextTurn,
+	/// Until the end of next turn
+	Turn,
     Round,
     Minute,
     Forever,
@@ -28,7 +40,7 @@ impl Selectable for Unit {
 
     fn variants() -> impl Iterator<Item = Self> {
         [
-            Unit::UntilNextTurn,
+            Unit::Turn,
             Unit::Round,
             Unit::Minute,
             Unit::Forever,
@@ -39,13 +51,15 @@ impl Selectable for Unit {
 impl std::fmt::Display for Unit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Unit::UntilNextTurn => write!(f, "Until end of next turn"),
+            Unit::Turn => write!(f, "Until end of next turn"),
             Unit::Round => write!(f, "Rounds"),
             Unit::Minute => write!(f, "Minutes"),
             Unit::Forever => write!(f, "Forever"),
         }
     }
 }
+
+// -- Apply Condition -- //
 
 /// State for applying conditions to combatants.
 #[derive(Clone, Debug, Default)]
@@ -64,7 +78,6 @@ pub struct ApplyCondition {
 }
 
 impl ApplyCondition {
-	// TODO Move to drawable trait
     /// Draw the state to the given [`Frame`].
     pub fn draw(&self, frame: &mut Frame) {
         let area = frame.area();
@@ -144,7 +157,7 @@ impl ApplyCondition {
         for condition in &self.conditions {
             // TODO: get the duration from the input field
             let duration = match self.unit {
-                Unit::UntilNextTurn => ConditionDuration::UntilNextTurn,
+                Unit::Turn => ConditionDuration::UntilNextTurn,
                 Unit::Round => ConditionDuration::Rounds(NonZeroU32::new(1).unwrap()),
                 Unit::Minute => ConditionDuration::Minutes(NonZeroU32::new(1).unwrap()),
                 Unit::Forever => ConditionDuration::Forever,
