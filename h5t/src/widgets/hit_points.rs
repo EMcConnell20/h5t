@@ -30,7 +30,7 @@ impl HitPoints {
 
         Line::from(vec![
             Span::styled(format!("{}", self.current), hp_color),
-            Span::raw(format!(" / {}", self.max)),
+            Span::raw(format!("/{}", self.max)),
         ])
     }
 }

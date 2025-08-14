@@ -87,17 +87,17 @@ fn action_line(actions: Action) -> Line<'static> {
 	let mut spans = Vec::new();
 	
 	if actions.actions > 0 {
-		spans.push(Span::styled(fmt_action("Act", actions.actions), ACTION_COLOR));
+		spans.push(Span::styled(fmt_action("A", actions.actions), ACTION_COLOR));
 		spans.push(Span::raw(DIVIDER_CHARACTER));
 	}
 	
 	if actions.bonus_actions > 0 {
-		spans.push(Span::styled(fmt_action("Bonus", actions.bonus_actions), BONUS_ACTION_COLOR));
+		spans.push(Span::styled(fmt_action("B", actions.bonus_actions), BONUS_ACTION_COLOR));
 		spans.push(Span::raw(DIVIDER_CHARACTER));
 	}
 	
 	if actions.reactions > 0 {
-		spans.push(Span::styled(fmt_action("React", actions.reactions), Color::Magenta));
+		spans.push(Span::styled(fmt_action("R", actions.reactions), Color::Magenta));
 		spans.push(Span::raw(DIVIDER_CHARACTER));
 	}
 	
@@ -185,7 +185,7 @@ fn make_combat_table<'a, 'b: 'a>(tracker_widget: TrackerWidget<'b>) -> Table<'a>
 			Text::raw(""),
 			Text::from("Name").centered(),
 			Text::from("Actions").centered(),
-			Text::from("HP / Max HP").centered(),
+			Text::from("HP").centered(),
 			Text::from("Conditions").centered(),
 		]).bold())
 }
@@ -231,8 +231,8 @@ mod utility_functions {
 		Row::new([
 			label_text,
 			Text::from(combatant.name()),
-			action_line(combatant.actions).into(),
-			HitPoints::new(combatant).line().into(),
+			action_line(combatant.actions).centered().into(),
+			HitPoints::new(combatant).line().centered().into(),
 			CompactConditions::new(combatant).line().into(),
 		])
 	}
