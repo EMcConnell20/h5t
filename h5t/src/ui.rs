@@ -1,16 +1,13 @@
 // -- Imports -- //
 
-use crate::widgets::Tracker as TrackerWidget;
-use crate::widgets::{max_combatants_visible, CombatantBlock, StatBlock};
+use crate::widgets::{max_combatants_visible, CombatantBlock, StatBlock, TrackerWidget};
 use crate::state::{AfterKey, ActionState, ApplyCondition, ApplyDamage};
 
 use h5t_core::{Combatant, CombatantKind, Tracker};
 
 use ratatui::prelude::*;
 use crossterm::event::{read, Event, KeyCode};
-use bimap::BiMap;
 
-use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 
 // -- Label Selection -- //
@@ -42,10 +39,6 @@ impl LabelSelection {
 		let Some(index) = Self::label_to_index(label, label_count) else { return };
 		debug_assert!(index < 32);
 		self.selection[index] = !self.selection[index];
-	}
-	
-	pub fn wipe_selection(&mut self) {
-		self.selection = [false; 32]
 	}
 	
 	/// Converts a label to an index if the label is on screen.
@@ -141,21 +134,21 @@ impl LabelSelection {
 
 // -- Old Label Select -- //
 
-/// State passed to [`TrackerWidget`] to handle label mode.
-#[derive(Clone, Debug, Default)]
-pub struct LabelModeState {
-	/// The labels to display next to each combatant.
-	pub labels: BiMap<char, usize>,
-	
-	/// The labels that have been selected.
-	pub selected: HashSet<char>,
-}
-
-impl LabelModeState {
-	fn new(labels: BiMap<char, usize>, selected: HashSet<char>) -> Self {
-		Self { labels, selected }
-	}
-}
+// State passed to [`TrackerWidget`] to handle label mode.
+// #[derive(Clone, Debug, Default)]
+// pub struct LabelModeState {
+// 	/// The labels to display next to each combatant.
+// 	pub labels: BiMap<char, usize>,
+//
+// 	/// The labels that have been selected.
+// 	pub selected: HashSet<char>,
+// }
+//
+// impl LabelModeState {
+// 	fn new(labels: BiMap<char, usize>, selected: HashSet<char>) -> Self {
+// 		Self { labels, selected }
+// 	}
+// }
 
 // -- Info Block -- //
 
@@ -178,13 +171,19 @@ impl InfoBlockMode {
     }
 }
 
-// -- Page Struct -- //
+// -- Page Stuff -- //
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Page {
 	id: usize, // Page number
 	combatants: Vec<usize>, // Vec of combatant indexes in the tracker.
 	label_selection: Option<Box<LabelSelection>>, // Option<Box<_>> to save space.
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct PageConfig {
+	page_size: usize,
+	current_page: usize,
 }
 
 impl Page {
@@ -197,6 +196,8 @@ impl Page {
 	}
 	
 	fn from_combatants(combatants: &Vec<Combatant>, page_size: usize) -> Vec<Self> {
+		if page_size == 0 { return Vec::new() };
+		
 		let mut pages = Vec::new();
 		let mut count = combatants.len();
 		
@@ -236,6 +237,37 @@ impl Page {
 	}
 }
 
+impl PageConfig {
+	fn new<B: Backend>(terminal: &Terminal<B>) -> Self {
+		Self {
+			page_size: max_combatants_visible(terminal.size().unwrap_or_default()),
+			current_page: 0,
+		}
+	}
+	
+	/// Updates the page configuration.
+	///
+	/// Rewrites the pages if the configuration was modified.
+	fn update<B: Backend>(
+		&mut self,
+		pages: &mut Vec<Page>,
+		terminal: &Terminal<B>,
+		tracker: &Tracker,
+	) {
+		let updated_page_size = max_combatants_visible(terminal.size().unwrap_or_default());
+		if self.page_size != updated_page_size {
+			*pages = Page::from_combatants(&tracker.combatants, updated_page_size);
+			
+			if self.current_page >= pages.len() {
+				if pages.len() == 0 { self.current_page = 0 }
+				else { self.current_page = pages.len() - 1 }
+			}
+			
+			self.page_size = updated_page_size;
+		}
+	}
+}
+
 // -- UI Struct -- //
 
 /// A wrapper around a [`Tracker`] that handles UI-dependent logic such as label mode.
@@ -246,55 +278,60 @@ pub struct UI<B: Backend> {
     /// The initiative tracker.
     pub tracker: Tracker,
 
+	/// Page configuration style
+	page_config: PageConfig,
 	/// Combatant pages
 	pages: Vec<Page>,
-	current_page: usize,
-	
 	/// Whether label selection mode is enabled
 	labels_enabled: bool,
     /// Current info block display mode
 	info_block_mode: InfoBlockMode,
 	/// (optional) Current action being applied
-	action_state: Option<ActionState>,
-	/// (optional) Current label mode
-    label_state: Option<LabelModeState>,
+	action_mode: Option<ActionState>,
+	// (optional) Current label mode
+    // label_state: Option<LabelModeState>,
 }
 
 impl<B: Backend> UI<B> {
     pub fn new(terminal: Terminal<B>, tracker: Tracker) -> Self {
-		let pages = Page::from_combatants(
-			&tracker.combatants,
-			max_combatants_visible(terminal.size().unwrap())
-		);
+		let page_config = PageConfig::new(&terminal);
+		let pages = Page::from_combatants(&tracker.combatants, page_config.page_size);
 		
         Self {
-            terminal,
-            tracker,
-			pages,
-			current_page: 0,
+            terminal, tracker,
+			page_config, pages,
 			labels_enabled: false,
             info_block_mode: InfoBlockMode::CombatState,
-			
-            action_state: None,
-            label_state: None,
+            action_mode: None,
+            // label_state: None,
         }
     }
 
     pub fn run(&mut self) {
 		'run_loop : loop {
+			self.page_config.update(&mut self.pages, &self.terminal, &self.tracker);
+			
             self.draw().unwrap();
 			
 			let key_input = 'get_key_input: loop {
-				if let Ok(Event::Key(key)) = read() {
-					break 'get_key_input key;
+				let Ok(event) = read() else { continue 'get_key_input };
+				match event {
+					Event::Key(key) => break 'get_key_input key,
+					
+					Event::Resize(_, _) => {
+						self.page_config.update(&mut self.pages, &self.terminal, &self.tracker);
+						self.draw().unwrap();
+					}
+					
+					_ => (),
 				}
 			};
 
             // Handle any active tracker state.
-            if let Some(mut state) = self.action_state.take() {
+            if let Some(mut state) = self.action_mode.take() {
                 match state.handle_key(key_input) {
                     AfterKey::Exit => state.apply(&mut self.tracker),
-                    AfterKey::Stay => self.action_state = Some(state),
+                    AfterKey::Stay => self.action_mode = Some(state),
                 }
 				
                 continue 'run_loop;
@@ -302,14 +339,23 @@ impl<B: Backend> UI<B> {
 			
 			// Handle regular input.
             match key_input.code {
+				KeyCode::Up => // Previous Page
+					if self.page_config.current_page > 0 {
+						self.page_config.current_page -= 1
+					},
+				
+				KeyCode::Down => // Next Page
+					if self.page_config.current_page + 1 < self.pages.len() {
+						self.page_config.current_page += 1
+					},
+				
                 KeyCode::Char('c') => {
-                    self.action_state = Some(ActionState::Condition(ApplyCondition::default()));
+                    self.action_mode = Some(ActionState::Condition(ApplyCondition::default()));
                 },
 				
                 KeyCode::Char('d') => {
                     let selected = self.enter_label_mode();
-                    self.action_state = Some(ActionState::Damage(ApplyDamage::new(selected)));
-                    self.label_state = None;
+                    self.action_mode = Some(ActionState::Damage(ApplyDamage::new(selected)));
                 },
 				
                 KeyCode::Char('a') => { self.use_action(); }
@@ -333,29 +379,46 @@ impl<B: Backend> UI<B> {
             ]).split(frame.area());
             let [tracker_area, info_area] = [layout[0], layout[1]];
 			
+			let tracker_widget = TrackerWidget::new(
+				&self.tracker,
+				self.pages.get(self.page_config.current_page),
+				self.labels_enabled,
+			);
 			
+			frame.render_widget(tracker_widget, tracker_area);
 			
+			// TODO Remove this
             // show tracker
-            let tracker_widget = if let Some(label) = &self.label_state {
-                TrackerWidget::with_labels(&self.tracker, label.clone())
-            } else {
-                TrackerWidget::new(&self.tracker)
-            };
-            frame.render_widget(tracker_widget, tracker_area);
+            // let old_tracker_widget = if let Some(label) = &self.label_state {
+            //     OldTrackerWidget::with_labels(&self.tracker, label.clone())
+            // } else {
+            //     OldTrackerWidget::new(&self.tracker)
+            // };
+            // frame.render_widget(old_tracker_widget, tracker_area);
 
             let combatant = self.tracker.current_combatant();
-            if self.info_block_mode == InfoBlockMode::Stats {
-                // show stat block in place of the combatant card
-                let CombatantKind::Monster(monster) = &combatant.kind;
-                frame.render_widget(StatBlock::new(monster), info_area);
-            } else {
-                // show combatant card
-                frame.render_widget(CombatantBlock::new(combatant), info_area);
-            }
-
-            let Some(state) = self.action_state.as_ref() else {
-                return;
-            };
+			
+			match self.info_block_mode {
+				InfoBlockMode::CombatState =>
+					frame.render_widget(CombatantBlock::new(combatant), info_area),
+				
+				InfoBlockMode::Stats => {
+					// TEMP Need to expand this for other combatant kinds
+					let CombatantKind::Monster(monster) = &combatant.kind;
+					frame.render_widget(StatBlock::new(monster), info_area);
+				}
+			}
+			
+            // if self.info_block_mode == InfoBlockMode::Stats {
+            //     // show stat block in place of the combatant card
+            //     let CombatantKind::Monster(monster) = &combatant.kind;
+            //     frame.render_widget(StatBlock::new(monster), info_area);
+            // } else {
+            //     // show combatant card
+            //     frame.render_widget(CombatantBlock::new(combatant), info_area);
+            // }
+			
+            let Some(state) = self.action_mode.as_ref() else { return };
             state.draw(frame);
         })
     }
@@ -410,13 +473,17 @@ impl<B: Backend> UI<B> {
 					return Vec::new(),
 				
 				KeyCode::Up => // Previous Page
-					if self.current_page + 1 < self.pages.len() { self.current_page += 1 },
+					if self.page_config.current_page > 0 {
+						self.page_config.current_page -= 1
+					},
 				
 				KeyCode::Down => // Next Page
-					if self.current_page > 0 { self.current_page -= 1 },
+					if self.page_config.current_page + 1 < self.pages.len() {
+						self.page_config.current_page += 1
+					},
 				
 				KeyCode::Char(label) => {
-					self.pages[self.current_page].toggle_selection(label);
+					self.pages[self.page_config.current_page].toggle_selection(label);
 					
 					// TODO Remove this
 					// if combatant_label_map.contains_left(&label) {
@@ -459,7 +526,11 @@ impl<B: Backend> UI<B> {
 
 impl<B: Backend> Widget for UI<B> {
 	fn render(self, area: Rect, buf: &mut Buffer) {
-		TrackerWidget::new(&self.tracker).render(area, buf);
+		TrackerWidget::new(
+			&self.tracker,
+			self.pages.get(self.page_config.current_page),
+			self.labels_enabled,
+		).render(area, buf);
 	}
 }
 
